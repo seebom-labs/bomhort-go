@@ -1,0 +1,43 @@
+name: Release
+# Push a semver tag (vX.Y.Z) to release. The workflow re-runs the checks,
+# verifies the tag matches bomhort.Version and CHANGELOG.md, creates a
+# GitHub release with the changelog section and warms the Go module proxy.
+# See docs/RELEASING.md.
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Checks
+        run: make check
+      - name: Verify version and changelog
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          want="${TAG#v}"
+          got=$(sed -n 's/^const Version = "\(.*\)"$/\1/p' bomhort.go)
+          [ "$got" = "$want" ] || { echo "bomhort.Version is $got, tag is $TAG"; exit 1; }
+          awk -v v="$want" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "CHANGELOG.md has no section for [$want]"; exit 1; }
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags=()
+          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$TAG" --title "$TAG" --notes-file notes.md --verify-tag "${flags[@]}"
+      - name: Warm the Go module proxy
+        # Only the canonical repository serves the module path in go.mod.
+        if: github.repository == 'seebom-labs/bomhort-go'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: GOPROXY=https://proxy.golang.org GOFLAGS=-mod=mod go list -m "github.com/seebom-labs/bomhort-go@$TAG"

@@ -1,0 +1,11 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      actions: { patterns: ["*"] }
+  # bomhort-go has no Go dependencies; this only tracks the go directive.
+  - package-ecosystem: gomod
+    directory: /
+    schedule: { interval: weekly }

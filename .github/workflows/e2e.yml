@@ -1,0 +1,89 @@
+name: E2E (BOMHort)
+# Runs hack/e2e-bomhort.sh: builds BOMHort from source at a given ref, starts
+# it with docker compose and runs test/integration against it with strict
+# decoding (unknown JSON fields fail the run).
+#
+# - pull requests / pushes: the pinned, released BOMHort (must stay green)
+# - weekly schedule: pinned release + upstream `main` to catch API drift early
+# - workflow_dispatch: any ref (tag, branch or commit)
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      bomhort_ref:
+        description: BOMHort git ref to build (commit, tag or branch)
+        default: main
+env:
+  # BOMHort v0.7.1. Bump together with docs/COMPATIBILITY.md.
+  BOMHORT_PINNED_REF: f36a895164822778d78e70fe23e085a2b04ee4c3
+permissions:
+  contents: read
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  refs:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_REF: ${{ github.event.inputs.bomhort_ref }}
+        run: |
+          case "$EVENT" in
+            schedule) echo "matrix=[\"$BOMHORT_PINNED_REF\",\"main\"]" ;;
+            workflow_dispatch) echo "matrix=[\"${INPUT_REF:-main}\"]" ;;
+            *) echo "matrix=[\"$BOMHORT_PINNED_REF\"]" ;;
+          esac >> "$GITHUB_OUTPUT"
+
+  bomhort:
+    needs: refs
+    name: bomhort@${{ matrix.ref }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ${{ fromJSON(needs.refs.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout BOMHort
+        uses: actions/checkout@v4
+        with:
+          repository: seebom-labs/BOMHort
+          ref: ${{ matrix.ref }}
+          path: .bomhort
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run E2E
+        env:
+          BOMHORT_SRC: ${{ github.workspace }}/.bomhort
+          BOMHORT_BUILD: "1"
+          BOMHORT_IMAGE_TAG: ci
+        run: hack/e2e-bomhort.sh
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### BOMHort \`$(git -C .bomhort describe --tags --always)\`"
+            echo '```'
+            grep -E '^(--- |ok|FAIL|E2E)' .e2e/integration.log 2>/dev/null || echo "no test output"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-bomhort-${{ strategy.job-index }}
+          if-no-files-found: ignore
+          path: |
+            .e2e/logs/
+            .e2e/integration.log
